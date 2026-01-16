@@ -1,6 +1,4 @@
-﻿using Impact.Models;
-
-namespace Impact.Controllers
+﻿namespace Impact.Models
 {
     public class TenderResponse
     {
