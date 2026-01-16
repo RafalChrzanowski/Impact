@@ -8,6 +8,6 @@ namespace Impact.Controllers
         public int PageSize { get; set; }
         public int PageCount { get; set; }
         public int Total { get; set; }
-        public List<TenderDto> Data { get; set; } = new();
+        public List<Tender> Data { get; set; } = new();
     }
 }
