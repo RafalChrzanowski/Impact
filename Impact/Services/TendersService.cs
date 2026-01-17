@@ -24,38 +24,64 @@ namespace Impact.Services
         private async Task<List<TenderDto>> GetCachedTendersAsync()
         {
             _httpClient.Timeout = TimeSpan.FromMinutes(5);
-            var cachedData = await _cache.GetStringAsync(CacheKey);
 
-            if (!string.IsNullOrEmpty(cachedData))
+            try
             {
-                return JsonSerializer.Deserialize<List<TenderDto>>(cachedData)!;
+                var cachedData = await _cache.GetStringAsync(CacheKey);
+                if (!string.IsNullOrEmpty(cachedData))
+                {
+                    try
+                    {
+                        return JsonSerializer.Deserialize<List<TenderDto>>(cachedData) ?? new List<TenderDto>();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Cache deserialization error: {ex.Message}");
+
+                        await _cache.RemoveAsync(CacheKey);
+                    }
+                }
+
+                var tenders = new List<TenderDto>();
+                for (int page = 1; page <= 100; page++)
+                {
+                    TenderResponse? response = null;
+                    try
+                    {
+                        response = await _httpClient.GetFromJsonAsync<TenderResponse>($"{_baseUrl}?page={page}");
+                    }
+                    catch
+                    {
+                        break;
+                    }
+
+                    if (response?.Data == null || !response.Data.Any())
+                        break;
+
+                    tenders.AddRange(response.Data.Select(TenderMapper.ToDto));
+                }
+
+                if (tenders.Any())
+                {
+                    var options = new DistributedCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
+                    };
+
+                    await _cache.SetStringAsync(
+                        CacheKey,
+                        JsonSerializer.Serialize(tenders),
+                        options
+                    );
+                }
+                return tenders;
             }
-
-            var tenders = new List<TenderDto>();
-
-            for (int page = 1; page <= 100; page++)
+            catch
             {
-                var response = await _httpClient.GetFromJsonAsync<TenderResponse>($"{_baseUrl}?page={page}");
-
-                if (response?.Data == null || !response.Data.Any())
-                    break;
-
-                tenders.AddRange(response.Data.Select(TenderMapper.ToDto));
+                return new List<TenderDto>();
             }
-
-            var options = new DistributedCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
-            };
-
-            await _cache.SetStringAsync(
-                CacheKey,
-                JsonSerializer.Serialize(tenders),
-                options
-            );
-
-            return tenders;
         }
+
 
         public async Task<PagedResponse<TenderDto>> GetTendersAsync(TenderFilterDto filter)
         {
