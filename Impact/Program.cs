@@ -12,6 +12,7 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient<ITendersService, TendersService>();
+builder.Services.AddDistributedMemoryCache();
 
 var app = builder.Build();
 

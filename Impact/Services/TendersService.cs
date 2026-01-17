@@ -1,123 +1,111 @@
 using Impact.Mappers;
 using Impact.Models;
+using Microsoft.Extensions.Caching.Distributed;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 namespace Impact.Services
 {
     public class TendersService : ITendersService
     {
-        private const string BaseUrl = "https://tenders.guru/api/pl/tenders";
+        private const string CacheKey = "all_tenders";
+        private readonly string _baseUrl;
         private readonly HttpClient _httpClient;
+        private readonly IDistributedCache _cache;
 
-        private List<TenderDto>? _tendersCache;
 
-        public TendersService(HttpClient httpClient)
+        public TendersService(HttpClient httpClient, IDistributedCache cache, IConfiguration configuration)
         {
             _httpClient = httpClient;
+            _cache = cache;
+            _baseUrl = configuration["BaseUrl"] ?? throw new ArgumentNullException("BaseUrl is missing in appsettings.json");
         }
-
-        public async Task<List<TenderDto>> GetAllTendersAsync()
+        private async Task<List<TenderDto>> GetCachedTendersAsync()
         {
-            if (_tendersCache != null)
-                return _tendersCache;
+            var cachedData = await _cache.GetStringAsync(CacheKey);
 
-            _tendersCache = new List<TenderDto>();
+            if (!string.IsNullOrEmpty(cachedData))
+            {
+                return JsonSerializer.Deserialize<List<TenderDto>>(cachedData)!;
+            }
+
+            var tenders = new List<TenderDto>();
+
             for (int page = 1; page <= 100; page++)
             {
-                var response = await _httpClient.GetFromJsonAsync<TenderResponse>($"{BaseUrl}?page={page}");
+                var response = await _httpClient.GetFromJsonAsync<TenderResponse>($"{_baseUrl}?page={page}");
+
                 if (response?.Data == null || !response.Data.Any())
                     break;
 
-                _tendersCache.AddRange(response.Data.Select(TenderMapper.ToDto));
+                tenders.AddRange(response.Data.Select(TenderMapper.ToDto));
             }
 
-            return _tendersCache;
+            var options = new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10)
+            };
+
+            await _cache.SetStringAsync(
+                CacheKey,
+                JsonSerializer.Serialize(tenders),
+                options
+            );
+
+            return tenders;
         }
 
-        public async Task<IEnumerable<TenderDto>> GetTendersByAmountAsync(decimal? min, decimal? max)
+        public async Task<PagedResponse<TenderDto>> GetTendersAsync(TenderFilterDto filter)
         {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
+            var tenders = await GetCachedTendersAsync();
+            var query = tenders.AsQueryable();
 
-            var query = _tendersCache.AsEnumerable();
+            if (filter.MinAmount.HasValue)
+                query = query.Where(t => t.AmountEur >= filter.MinAmount.Value);
 
-            if (min.HasValue)
-                query = query.Where(t => t.AmountEur >= min.Value);
+            if (filter.MaxAmount.HasValue)
+                query = query.Where(t => t.AmountEur <= filter.MaxAmount.Value);
 
-            if (max.HasValue)
-                query = query.Where(t => t.AmountEur <= max.Value);
+            if (filter.StartDate.HasValue)
+                query = query.Where(t => t.Date >= filter.StartDate.Value);
 
-            return query;
-        }
+            if (filter.EndDate.HasValue)
+                query = query.Where(t => t.Date <= filter.EndDate.Value);
 
-        public async Task<IEnumerable<TenderDto>> GetTendersOrderedByAmountAsync(bool asc = true)
-        {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
+            if (filter.SupplierId.HasValue)
+                query = query.Where(t => t.Suppliers.Any(s => s.Id == filter.SupplierId.Value));
 
-            var query = _tendersCache.AsEnumerable();
+            if (filter.TenderId.HasValue)
+                query = query.Where(t => t.Id == filter.TenderId.Value);
 
-            query = asc
-                ? query.OrderBy(t => t.AmountEur)
-                : query.OrderByDescending(t => t.AmountEur);
+            if (filter.OrderByAmountAsc.HasValue)
+            {
+                query = filter.OrderByAmountAsc.Value
+                    ? query.OrderBy(t => t.AmountEur)
+                    : query.OrderByDescending(t => t.AmountEur);
+            }
+            else if (filter.OrderByDateAsc.HasValue)
+            {
+                query = filter.OrderByDateAsc.Value
+                    ? query.OrderBy(t => t.Date)
+                    : query.OrderByDescending(t => t.Date);
+            }
 
-            return query;
-        }
+            var page = Math.Max(filter.Page, 1);
+            var pageSize = Math.Clamp(filter.PageSize, 1, 100);
 
-        public async Task<IEnumerable<TenderDto>> GetTendersByDateAsync(DateTime? startDate, DateTime? endDate)
-        {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
+            var totalItems = query.Count();
 
-            var query = _tendersCache.AsEnumerable();
+            var items = query.Skip((page - 1) * pageSize).Take(pageSize).ToList();
 
-            if (startDate.HasValue)
-                query = query.Where(t => t.Date >= startDate.Value);
-
-            if (endDate.HasValue)
-                query = query.Where(t => t.Date <= endDate.Value);
-
-            return query;
-        }
-
-        public async Task<IEnumerable<TenderDto>> GetTendersOrderedByDateAsync(bool asc = true)
-        {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
-
-            var query = _tendersCache.AsEnumerable();
-
-            query = asc
-                ? query.OrderBy(t => t.Date)
-                : query.OrderByDescending(t => t.Date);
-
-            return query;
-        }
-
-        public async Task<IEnumerable<TenderDto>> GetTendersBySupplierIdAsync(int? supplierId)
-        {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
-
-            var query = _tendersCache.AsEnumerable();
-
-            if (supplierId != null)
-                query = query.Where(t => t.Suppliers.Any(s => s.Id == supplierId));
-
-            return query;
-        }
-
-        public async Task<IEnumerable<TenderDto>> GetTendersByTenderIdAsync(int? tenderId)
-        {
-            if (_tendersCache == null)
-                await GetAllTendersAsync();
-
-            var query = _tendersCache.AsEnumerable();
-
-            if (tenderId != null)
-                query = query.Where(t => t.Id == tenderId);
-
-            return query;
+            return new PagedResponse<TenderDto>
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalItems = totalItems,
+                TotalPages = (int)Math.Ceiling(totalItems / (double)pageSize),
+                Items = items
+            };
         }
     }
 }
