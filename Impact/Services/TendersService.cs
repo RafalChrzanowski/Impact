@@ -1,6 +1,7 @@
 using Impact.Mappers;
 using Impact.Models;
 using Microsoft.Extensions.Caching.Distributed;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 
@@ -22,6 +23,7 @@ namespace Impact.Services
         }
         private async Task<List<TenderDto>> GetCachedTendersAsync()
         {
+            _httpClient.Timeout = TimeSpan.FromMinutes(5);
             var cachedData = await _cache.GetStringAsync(CacheKey);
 
             if (!string.IsNullOrEmpty(cachedData))
